@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -235,6 +236,107 @@ class WatcherTest(unittest.TestCase):
             result = scan_folder(folder)
             self.assertTrue(folder.is_dir())
             self.assertEqual(result.errors, [])
+
+
+class FileServer:
+    """Serveert één bestand, zodat een 'gewoon' bestand te testen is."""
+
+    def __init__(self, payload: bytes, name: str = "app.zip") -> None:
+        self.payload = payload
+        self.name = name
+        self.httpd = None
+
+    def start(self) -> str:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: PLC0415
+
+        payload, name = self.payload, self.name
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - API van de basisklasse
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - API van de basisklasse
+                return
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/download/{name}"
+
+    def stop(self) -> None:
+        if self.httpd is not None:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+
+class DirectTest(unittest.TestCase):
+    """Rechtstreekse bestanden (zoals een releasebestand van GitHub) in de wachtrij."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.slack = MockWetransferServer()
+        self.slack.start()
+        self.settings = Settings(
+            download_dir=str(self.dir / "downloads"),
+            slack_webhook=f"{self.slack.base_url}/slack",
+        )
+        self.log = AppLog(self.dir / "app.log")
+        self.queue = DownloadQueue(
+            settings_provider=lambda: self.settings,
+            log=self.log,
+            store=QueueStore(self.dir / "queue.json"),
+            skip_webhook_host_check=True,
+        )
+        self.payload = make_payload("WeTransferOphalen-Windows.zip", 64 * 1024)
+        self.server = FileServer(self.payload, "WeTransferOphalen-Windows.zip")
+        self.url = self.server.start()
+
+    def tearDown(self) -> None:
+        self.server.stop()
+        self.slack.stop()
+        self.tmp.cleanup()
+
+    def test_geen_webadres_wordt_geweigerd(self) -> None:
+        ok, error = self.queue.add_direct("niet-eens-een-adres", "x.zip")
+        self.assertFalse(ok)
+        self.assertIn("webadres", error)
+        self.assertEqual(self.queue.items, [])
+
+    def test_hetzelfde_bestand_komt_niet_twee_keer(self) -> None:
+        self.assertTrue(self.queue.add_direct(self.url, "app.zip")[0])
+        ok, error = self.queue.add_direct(self.url, "app.zip")
+        self.assertFalse(ok)
+        self.assertIn("staat al", error)
+        self.assertEqual(len(self.queue.items), 1)
+
+    def test_rechtstreeks_bestand_wordt_opgehaald_en_gemeld(self) -> None:
+        ok, error = self.queue.add_direct(self.url, "WeTransferOphalen-Windows.zip", source="github")
+        self.assertTrue(ok, error)
+        self.assertTrue(self.queue.start())
+        self.assertTrue(wait_until(lambda: self.queue.items[0].state == DONE, timeout=20))
+        item = self.queue.items[0]
+        self.assertEqual(item.source, "github")
+        self.assertTrue(item.direct)
+        target = Path(item.path)
+        self.assertEqual(target.name, "WeTransferOphalen-Windows.zip")
+        self.assertEqual(target.read_bytes(), self.payload)
+        self.assertTrue(wait_until(lambda: bool(self.slack.slack_messages), timeout=10))
+        bericht = self.slack.slack_messages[0]["text"]
+        self.assertIn("Bestand opgehaald", bericht)
+        self.assertIn("github", bericht)
+
+    def test_mislukte_rechtstreekse_download_geeft_een_fout(self) -> None:
+        ok, _ = self.queue.add_direct("http://127.0.0.1:9/bestaat-niet.zip", "x.zip")
+        self.assertTrue(ok)
+        self.queue.start()
+        self.assertTrue(wait_until(lambda: self.queue.items[0].state == FAILED, timeout=30))
+        self.assertTrue(self.queue.items[0].error)
 
 
 if __name__ == "__main__":

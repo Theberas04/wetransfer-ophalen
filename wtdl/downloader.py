@@ -112,19 +112,25 @@ def download(
     max_attempts: int = 4,
     session: Optional[requests.Session] = None,
     chunk_size: int = CHUNK_SIZE,
+    name: str = "",
 ) -> DownloadResult:
     """Download de hele transfer naar ``directory`` en hervat waar mogelijk.
 
     ``refresh`` levert een nieuwe directe link als de ondertekende link verloopt;
     de download gaat dan verder met een Range-verzoek vanaf de al ontvangen bytes.
+    ``name`` overschrijft de bestandsnaam; nodig voor links waarvan het adres niet
+    op een bestandsnaam eindigt (zoals een releasebestand van de GitHub-API).
     """
 
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     http = session or requests.Session()
 
-    base_name = name_from_direct_link(direct_link) or sanitize_filename(
-        info.recommended_filename, f"wetransfer-{info.link.transfer_id or 'bestand'}.zip"
+    base_name = (
+        sanitize_filename(name)
+        if (name or "").strip()
+        else name_from_direct_link(direct_link)
+        or sanitize_filename(info.recommended_filename, f"wetransfer-{info.link.transfer_id or 'bestand'}.zip")
     )
     part_path = directory / f"{base_name}{PART_SUFFIX}"
 

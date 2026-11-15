@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 APP_NAME = "WeTransfer Ophalen"
+# De repo van de app zelf: die kijkt hij standaard in de gaten (releases + links in issues).
+DEFAULT_GITHUB_REPO = "Theberas04/wetransfer-ophalen"
 
 
 def config_directory() -> Path:
@@ -43,6 +45,29 @@ class Settings:
     sound_on_finish: bool = True
     autostart_with_windows: bool = False
     last_password: str = ""
+    # Webversie: dezelfde pagina op een IP-adres in je netwerk.
+    web_enabled: bool = False
+    web_host: str = "0.0.0.0"
+    web_port: int = 8756
+    web_code: str = ""
+    # GitHub-bron: nieuwe releases en WeTransfer-links in issues en opmerkingen.
+    github_enabled: bool = False
+    github_repos: str = DEFAULT_GITHUB_REPO
+    github_interval: int = 15  # minuten
+    github_watch_releases: bool = True
+    github_watch_links: bool = True
+    github_download_releases: bool = True
+    github_token: str = ""
+    # Mailbox-bron: WeTransfer-mails (bijvoorbeeld van aangevraagde opnames) lezen.
+    mailbox_enabled: bool = False
+    mailbox_host: str = ""
+    mailbox_port: int = 993
+    mailbox_user: str = ""
+    mailbox_password: str = ""
+    mailbox_folder: str = "INBOX"
+    mailbox_sender: str = "wetransfer"
+    mailbox_days: int = 30
+    mailbox_interval: int = 10  # minuten
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -54,6 +79,13 @@ class Settings:
             if hasattr(settings, key) and value is not None:
                 setattr(settings, key, value)
         settings.watch_interval = max(5, int(settings.watch_interval or 20))
+        settings.web_port = min(65535, max(1, int(settings.web_port or 8756)))
+        settings.github_interval = max(5, int(settings.github_interval or 15))
+        settings.mailbox_interval = max(5, int(settings.mailbox_interval or 10))
+        settings.mailbox_days = min(365, max(1, int(settings.mailbox_days or 30)))
+        settings.mailbox_port = min(65535, max(1, int(settings.mailbox_port or 993)))
+        if not str(settings.github_repos or "").strip():
+            settings.github_repos = DEFAULT_GITHUB_REPO
         return settings
 
     def effective_watch_dir(self) -> str:

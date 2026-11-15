@@ -2,7 +2,10 @@
 
 Een Windows-app die WeTransfer-links automatisch ophaalt en daarna een berichtje
 naar Slack stuurt. Plak een link (of laat hem in de wachtmap vallen), en de app
-regelt de rest — ook als een download halverwege afbreekt.
+regelt de rest — ook als een download halverwege afbreekt. De app kijkt daarnaast
+zelf naar een **GitHub-repo** (nieuwe releases en links in issues) en naar je
+**mailbox** (de WeTransfer-mails van je aangevraagde opnames), en is te gebruiken
+vanaf elk apparaat in je netwerk via een **webadres op een IP**.
 
 ![De app tijdens het ophalen](docs/screenshot-ophalen.png)
 
@@ -22,6 +25,68 @@ regelt de rest — ook als een download halverwege afbreekt.
   Windows niet accepteert; een bestaand bestand wordt nooit overschreven (`Archiv (2).zip`).
 - **Logboek** in `%APPDATA%\WeTransfer Ophalen\app.log`, plus een venster met de laatste regels.
 - **Start mee met Windows** (optioneel) en een geluidje als een download klaar is.
+- **Webversie**: dezelfde pagina op `http://<ip-van-je-pc>:8756`, dus ook op je telefoon.
+  Beveiligd met een toegangscode die je één keer intoetst.
+- **GitHub-bron**: kijk in een repo naar nieuwe releases (die bestanden worden opgehaald)
+  en naar WeTransfer-links in issues, pull requests en opmerkingen.
+- **Mailbox-bron**: lees de WeTransfer-mails (bijvoorbeeld van een aangevraagde overdracht)
+  en haal de link eruit. Alleen lezen: niets wordt verwijderd of als gelezen gemarkeerd.
+
+## Webversie op een IP-adres
+
+Zet in de app **Webversie (via een IP-adres) → Webversie aan**. Het adres staat erbij
+(bijvoorbeeld `http://192.168.1.42:8756`) en de toegangscode ook. Open dat adres op je
+telefoon, typ de code één keer in en je hebt dezelfde app: links toevoegen, de wachtrij
+bekijken, bronnen controleren.
+
+- Windows vraagt de eerste keer om toestemming voor het netwerk (openbaar/privé); kies
+  **privé** en sta het toe, anders komt de telefoon er niet bij.
+- Vraagt Windows niets en kom je er niet bij, voeg dan eenmalig een regel toe in een
+  opdrachtvenster **als administrator**:
+  `netsh advfirewall firewall add rule name="WeTransfer Ophalen" dir=in action=allow protocol=TCP localport=8756`
+- Zonder venster (bijvoorbeeld op een pc die je niet aanraakt) start je alleen de webversie:
+  `"WeTransfer Ophalen.exe" --serve --web --port 8756`.
+- Laat je de toegangscode leeg, dan staat de pagina open voor iedereen in je netwerk.
+  Dat is op een thuisnetwerk te doen, maar de code is de rem erop.
+
+## GitHub-bron
+
+Zet **GitHub-bron → GitHub in de gaten houden** aan en vul de repo in als `eigenaar/repo`
+(meerdere mag, gescheiden door een komma). Standaard staat de repo van de app zelf erin.
+
+- **Releases**: bij een nieuwe release worden de bestanden uit die release opgehaald naar
+  `...\WeTransfer\github\<eigenaar>-<repo>\<versie>\`. De eerste controle van een repo legt
+  alleen een ijkpunt vast — anders zou de app bij het toevoegen meteen alle oude versies
+  binnenhalen. Daarna is elke nieuwe release raak.
+- **Links**: WeTransfer-links in issues, pull requests en opmerkingen gaan de wachtrij in.
+  Bestaande links worden bij de eerste controle wél meteen opgehaald.
+- Zonder toegangssleutel mag GitHub 60 verzoeken per uur; met een fijnmazige tussenpoos
+  (standaard 15 minuten) is dat ruim genoeg. Voor een privérepo of meer ruimte vul je een
+  **toegangssleutel** in (een fine-grained token met alleen leestoegang).
+
+## Aangevraagde opnames: via je mailbox
+
+WeTransfer stuurt je een e-mail zodra er iets binnenkomt bij een **aangevraagde overdracht**
+(*Request files*). Die bestanden staan in het tabblad *Received* van je WeTransfer-account, en
+daar is van buitenaf niet bij te komen: de publieke WeTransfer-API is gesloten ("New accounts
+cannot be created") en gaat alleen over transfers die je zelf maakt en over boards. Een
+API-sleutel levert je aangevraagde opnames dus niet op — de mail van WeTransfer is de route
+die wél werkt.
+
+Vul bij **Aangevraagde opnames (mailbox)** in:
+
+- **Mailserver**: bijvoorbeeld `imap.gmail.com`, `imap.mail.me.com` of de server van je provider.
+- **Poort**: 993 (met SSL).
+- **E-mailadres** en **app-wachtwoord**.
+- **Map** (standaard `INBOX`), **afzender-filter** (standaard `wetransfer`) en hoe ver terug
+  gekeken wordt (standaard 30 dagen).
+
+De app zoekt in die map naar mail van WeTransfer, haalt de downloadlink eruit en zet hem in de
+wachtrij. Welke berichten al bekeken zijn staat in `%APPDATA%\WeTransfer Ophalen\mailbox.json`.
+
+Let op: **Microsoft 365 laat geen IMAP met een gewoon wachtwoord meer toe.** Gebruik een adres
+waar app-wachtwoorden werken (Gmail, iCloud, je eigen mailserver) of een provider die
+app-wachtwoorden ondersteunt.
 
 ## Installeren
 
@@ -66,8 +131,9 @@ tijdsindicatie in het venster.
 
 ```bash
 python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v        # 55 tests, geen internet nodig
+python -m unittest discover -s tests -v        # 139 tests, geen internet nodig
 python main.py                                  # de app starten vanaf de broncode
+python main.py --serve --web --port 8756        # alleen de webversie, zonder venster
 python main.py --selftest rapport.json --core-only   # de kern testen (zonder venster)
 ```
 
@@ -92,6 +158,15 @@ Wat die zelftest bewijst, met de gebouwde .exe:
 - de foutafhandeling bij een verlopen transfer;
 - links uit een bestand in de wachtmap halen en het bestand naar `verwerkt` verplaatsen;
 - de wachtrij met Slack-meldingen (één per transfer, plus de samenvatting);
+- de webversie: dat hij zonder toegangscode dicht blijft, dat inloggen een cookie zet, dat de
+  pagina en de status eruit komen en dat een link die je vanaf het web toevoegt in de wachtrij
+  belandt;
+- de GitHub-bron: dat de eerste controle een ijkpunt vastlegt, dat een nieuwe release de
+  bestanden in de wachtrij zet, dat zo'n bestand echt op schaal binnenkomt (sha256-controle),
+  dat een link in een issue wordt opgepakt en dat de Slack-melding "Bestand opgehaald" verstuurd
+  wordt;
+- de mailbox-bron: dat een WeTransfer-mail wordt gelezen (alleen-lezen), dat de link in de
+  wachtrij komt en dat dezelfde mail niet twee keer wordt opgepakt;
 - dat het venster opent, dat de pagina zijn eigen JavaScript heeft geladen en dat de
   mapkiezer op de GUI-thread wordt geopend (WinForms weigert dat anders, en dan doet de
   knop niets).
@@ -100,9 +175,18 @@ Wat die zelftest bewijst, met de gebouwde .exe:
 
 - Alleen Windows (de app gebruikt pywebview met de Edge/WebView2-engine; Windows 10 en 11
   hebben die standaard).
+- De webversie is bedoeld voor je eigen netwerk, niet voor het open internet: er is geen
+  https en geen wachtwoordbeheer, alleen een toegangscode. Deel het adres niet buiten je huis.
+- De mailbox gebruikt IMAP met een wachtwoord of app-wachtwoord. Microsoft 365 doet daar niet
+  meer aan mee; Gmail en iCloud werken met een app-wachtwoord.
+- De webhook, het app-wachtwoord en de GitHub-sleutel staan leesbaar in
+  `%APPDATA%\WeTransfer Ophalen\settings.json`. Dat bestand hoort bij jou te blijven.
 - De app leunt op dezelfde niet-openbare endpoints als de website. Verandert WeTransfer die,
   dan moet de app mee. Een link die niet meer bestaat of verlopen is, levert een duidelijke
   melding op in plaats van een crash.
+- Voor de *Received*-tab van je WeTransfer-account (aangevraagde overdrachten) bestaat geen
+  openbare weg: de publieke API is gesloten en gaat niet over ontvangen transfers. Daarom loopt
+  dat via de mail die WeTransfer je stuurt.
 - Geen automatische updates: een nieuwe versie is een nieuwe ZIP.
 - Bij een transfer met meerdere bestanden levert WeTransfer één ZIP; dat is precies wat de
   app binnenhaalt.

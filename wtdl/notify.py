@@ -60,10 +60,18 @@ def done_text(item: Any, directory: str) -> str:
     size = human_size(getattr(item, "size", 0) or getattr(item, "received", 0))
     seconds = float(getattr(item, "seconds", 0) or 0)
     name = getattr(item, "name", "") or "transfer"
+    kop = (
+        ":inbox_tray: *Bestand opgehaald*"
+        if getattr(item, "direct", False)
+        else ":inbox_tray: *WeTransfer opgehaald*"
+    )
     lines = [
-        f":inbox_tray: *WeTransfer opgehaald* — `{name}`",
+        f"{kop} — `{name}`",
         f"Grootte: {size} · duur: {_duration(seconds)}",
     ]
+    source = getattr(item, "source", "")
+    if source and source not in ("handmatig",):
+        lines.append(f"Bron: {source}")
     path = getattr(item, "path", "")
     if path:
         lines.append(f"Opgeslagen als: `{path}`")

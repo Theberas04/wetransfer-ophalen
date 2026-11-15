@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 from . import notify
 from .downloader import DownloadCancelled, download
 from .store import AppLog, QueueStore, Settings
-from .wetransfer import TransferError, WetransferClient, extract_links
+from .wetransfer import ShareLink, TransferError, TransferInfo, WetransferClient, extract_links
 
 PENDING = "wachtend"
 RUNNING = "ophalen"
@@ -42,6 +42,7 @@ class QueueItem:
     source: str = "handmatig"
     attempts: int = 0
     skipped: bool = False
+    direct: bool = False  # True voor een gewoon bestand (bijvoorbeeld een releasebestand van GitHub)
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -75,6 +76,7 @@ class DownloadQueue:
         allow_hosts: tuple[str, ...] = (),
         skip_webhook_host_check: bool = False,
         on_finished: Optional[Callable[["QueueItem"], None]] = None,
+        direct_session: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.settings_provider = settings_provider
         self.client_factory = client_factory
@@ -85,6 +87,9 @@ class DownloadQueue:
         # Alleen voor tests en de zelftest: dan mag de webhook naar de nabootser wijzen.
         self.skip_webhook_host_check = skip_webhook_host_check
         self.on_finished = on_finished
+        # Levert een requests-sessie voor rechtstreekse bestanden (bijvoorbeeld met
+        # een GitHub-sleutel erin). Nooit nodig voor gewone WeTransfer-links.
+        self.direct_session = direct_session
         self.items: list[QueueItem] = []
         self._lock = threading.RLock()
         self._cancel = threading.Event()
@@ -124,6 +129,27 @@ class DownloadQueue:
             self.save()
             self._changed()
         return len(added), skipped
+
+    def add_direct(self, url: str, name: str = "", source: str = "github") -> tuple[bool, str]:
+        """Zet een gewoon bestand in de wachtrij (geen WeTransfer-link).
+
+        Wordt gebruikt voor de bestanden uit een nieuwe GitHub-release: dat is een
+        normale download, maar hij hoort wel in dezelfde wachtrij met dezelfde
+        meldingen.
+        """
+
+        url = (url or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return False, "Dit is geen webadres."
+        key = url.lower()
+        with self._lock:
+            if any(item.url.lower() == key and item.state in ACTIVE_STATES for item in self.items):
+                return False, "Dit bestand staat al in de wachtrij."
+            self.items.append(QueueItem(url=url, name=name, source=source, direct=True))
+        self.log.write(f"Bestand van {source} in de wachtrij: {name or url}")
+        self.save()
+        self._changed()
+        return True, ""
 
     def retry(self, item_id: str) -> bool:
         with self._lock:
@@ -219,38 +245,59 @@ class DownloadQueue:
 
         directory = Path(settings.download_dir)
         self.log.write(f"Ophalen gestart: {item.url}")
-        try:
-            if self._client is None:
-                self._client = self.client_factory()
-            info, direct_link = self._client.resolve(item.url, password=item.password)
-            item.name = info.recommended_filename or item.name
-            item.size = info.size or item.size
-            if not item.name:
-                item.name = Path(direct_link).name or "transfer"
+
+        def progress(received: int, total: Optional[int], speed: float) -> None:
+            item.received = received
+            if total:
+                item.size = total
+            item.speed = speed
             self._changed()
 
-            def refresh() -> str:
-                assert self._client is not None
-                self.log.write(f"Nieuwe downloadlink aanvragen voor {item.url}")
-                _, fresh = self._client.resolve(item.url, password=item.password)
-                return fresh
-
-            def progress(received: int, total: Optional[int], speed: float) -> None:
-                item.received = received
-                if total:
-                    item.size = total
-                item.speed = speed
+        try:
+            if item.direct:
+                # Een gewoon bestand, bijvoorbeeld een bestand uit een nieuwe GitHub-release.
+                info = TransferInfo(
+                    link=ShareLink(
+                        url=item.url, short_url=item.url, transfer_id="", security_hash="", direct=True
+                    ),
+                    state="downloadable",
+                    recommended_filename=item.name,
+                    size=item.size,
+                )
+                result = download(
+                    info,
+                    item.url,
+                    directory,
+                    on_progress=progress,
+                    cancel=self._cancel,
+                    session=self.direct_session() if self.direct_session else None,
+                    name=item.name,
+                )
+            else:
+                if self._client is None:
+                    self._client = self.client_factory()
+                info, direct_link = self._client.resolve(item.url, password=item.password)
+                item.name = info.recommended_filename or item.name
+                item.size = info.size or item.size
+                if not item.name:
+                    item.name = Path(direct_link).name or "transfer"
                 self._changed()
 
-            result = download(
-                info,
-                direct_link,
-                directory,
-                refresh=refresh,
-                on_progress=progress,
-                cancel=self._cancel,
-                session=self._client.session if self._client else None,
-            )
+                def refresh() -> str:
+                    assert self._client is not None
+                    self.log.write(f"Nieuwe downloadlink aanvragen voor {item.url}")
+                    _, fresh = self._client.resolve(item.url, password=item.password)
+                    return fresh
+
+                result = download(
+                    info,
+                    direct_link,
+                    directory,
+                    refresh=refresh,
+                    on_progress=progress,
+                    cancel=self._cancel,
+                    session=self._client.session if self._client else None,
+                )
             item.state = DONE
             item.path = str(result.path)
             item.size = result.size

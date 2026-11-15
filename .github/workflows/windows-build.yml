@@ -142,7 +142,8 @@ jobs:
           }
 
           Rename-Item (Join-Path $probe "$configName.disabled") $config
-          $withConfig = Invoke-SelfTest $exe 240
+          # Ruim: de zelftest doet nu ook de webversie, de GitHub-bron en de mailbox.
+          $withConfig = Invoke-SelfTest $exe 420
           Write-Host "With the app config: exit code $($withConfig.ExitCode), timed out $($withConfig.TimedOut)"
           if ($withConfig.TimedOut) {
             throw "The packaged app did not finish its selftest from a download-tagged folder."
@@ -157,8 +158,24 @@ jobs:
           Write-Host "Steps: $($ok.steps -join ' -> ')"
           Write-Host "Download: $($ok.download | ConvertTo-Json -Compress)"
           Write-Host "Queue: $($ok.queue | ConvertTo-Json -Compress)"
+          Write-Host "Web: $($ok.web | ConvertTo-Json -Compress)"
+          Write-Host "GitHub: $($ok.github | ConvertTo-Json -Compress)"
+          Write-Host "Mailbox: $($ok.mailbox | ConvertTo-Json -Compress)"
           if (-not $ok.ok) { throw "The packaged app reported a failed selftest: $($ok.error)" }
           if ($ok.steps -notcontains "window") { throw "The packaged app never opened its window: $($ok.steps -join ' -> ')" }
+          # De stappen van deze versie moeten er echt in zitten; een oudere build
+          # die ze overslaat mag niet als goed doorgaan.
+          foreach ($step in @("web", "github", "mailbox")) {
+            if ($ok.steps -notcontains $step) { throw "The packaged app skipped the '$step' step: $($ok.steps -join ' -> ')" }
+          }
+          if (-not $ok.web.address) { throw "The packaged app did not bring up its web version." }
+          if (-not $ok.web.needs_code) { throw "The packaged web version ran without an access code." }
+          if ($ok.web.items -lt 1) { throw "The packaged web version did not accept a link from the browser." }
+          if (-not $ok.github.asset_sha256) { throw "The packaged app did not download a GitHub release file." }
+          if (($ok.github.items | Where-Object { $_.state -ne "klaar" }).Count -gt 0) {
+            throw "The packaged app did not finish everything it found on GitHub: $($ok.github.items | ConvertTo-Json -Compress)"
+          }
+          if ($ok.mailbox.source -ne "mailbox") { throw "The packaged app did not pick up the link from the mailbox mail." }
           if (-not $ok.window.app_ready) { throw "The packaged app never loaded its own page (app.js did not run)." }
           if (-not $ok.download.sha256) { throw "The packaged app did not prove a real download." }
           if ($ok.download.resumed_from -le 0) { throw "The packaged app did not prove that it resumes an interrupted download." }

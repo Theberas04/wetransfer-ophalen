@@ -14,10 +14,15 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from wtdl import notify  # noqa: E402
+from wtdl.github import GithubClient, GithubWatcher, parse_repos  # noqa: E402
+from wtdl.mailbox import MailboxConfig, MailboxWatcher  # noqa: E402
 from wtdl.queue import DownloadQueue  # noqa: E402
 from wtdl.selftest import run_selftest  # noqa: E402
+from wtdl.server import WebServer, local_ip, new_code  # noqa: E402
+from wtdl.sources import SourceRunner  # noqa: E402
 from wtdl.store import (  # noqa: E402
     APP_NAME,
+    DEFAULT_GITHUB_REPO,
     AppLog,
     QueueStore,
     Settings,
@@ -80,9 +85,23 @@ def ui_thread_delegate(callback: Callable[[], None]) -> Any:
 class DesktopApi:
     """Alles wat de webpagina via ``window.pywebview.api`` kan aanroepen."""
 
-    def __init__(self, config_dir: Optional[Path] = None, window: Any = None) -> None:
+    def __init__(
+        self,
+        config_dir: Optional[Path] = None,
+        window: Any = None,
+        allow_hosts: tuple[str, ...] = (),
+        skip_webhook_host_check: bool = False,
+        client_factory: Optional[Callable[[], WetransferClient]] = None,
+    ) -> None:
         self.config_dir = Path(config_dir) if config_dir else config_directory()
         self.window = window
+        # Alleen voor tests en de zelftest: dan geldt een link op 127.0.0.1 ook als
+        # WeTransfer-link, zodat de hele keten tegen een nabootser te bewijzen is.
+        self.allow_hosts = tuple(allow_hosts)
+        # Idem: in de zelftest wijst de Slack-webhook naar de nabootser.
+        self.skip_webhook_host_check = skip_webhook_host_check
+        # Idem: in de zelftest wijst de WeTransfer-client naar de nabootser.
+        self.client_factory = client_factory or WetransferClient
         self.settings_store = SettingsStore(self.config_dir / "settings.json")
         self.settings: Settings = self.settings_store.load()
         self.log = AppLog(self.config_dir / "app.log")
@@ -90,15 +109,26 @@ class DesktopApi:
             self.log.write(self.settings_store.load_error)
         self.queue = DownloadQueue(
             settings_provider=lambda: self.settings,
-            client_factory=WetransferClient,
+            client_factory=self.client_factory,
             log=self.log,
             store=QueueStore(self.config_dir / "queue.json"),
             on_change=self._on_change,
             on_finished=self._on_item_finished,
+            direct_session=self._direct_session,
+            allow_hosts=self.allow_hosts,
+            skip_webhook_host_check=self.skip_webhook_host_check,
         )
         self.queue.load()
         self.watcher: Optional[FolderWatcher] = None
         self._watcher_thread: Optional[threading.Thread] = None
+        self.github: Optional[GithubWatcher] = None
+        self.mailbox: Optional[MailboxWatcher] = None
+        # Haken voor de zelftest: dan praten GitHub en de mailbox met een nabootser
+        # in plaats van met het echte internet.
+        self.github_client_factory: Optional[Callable[[], Any]] = None
+        self.mailbox_client_factory: Optional[Callable[[MailboxConfig], Any]] = None
+        self.sources = SourceRunner(log=self.log.write)
+        self.server: Optional[WebServer] = None
         self._lock = threading.RLock()
         self._last_state_push = 0.0
 
@@ -195,15 +225,155 @@ class DesktopApi:
         self._watcher_thread = None
 
     def _links_from_folder(self, links: list[str]) -> None:
-        added, _ = self.queue.add_links("\n".join(links), password=self.settings.last_password, source="wachtmap")
+        self._links_from_source(links, "wachtmap")
+
+    def _links_from_source(self, links: list[str], source: str = "handmatig") -> None:
+        """Links uit een bron (wachtmap, GitHub, mailbox) in de wachtrij zetten."""
+
+        if not links:
+            return
+        added, _ = self.queue.add_links(
+            "\n".join(links), password=self.settings.last_password, source=source
+        )
         if added:
-            self.log.write(f"{added} link(s) uit de wachtmap in de wachtrij gezet.")
+            self.log.write(f"{added} link(s) uit {source} in de wachtrij gezet.")
             if self.settings.auto_start:
                 self.queue.start()
+
+    def _asset_from_github(self, asset: dict[str, Any]) -> None:
+        """Een bestand uit een nieuwe GitHub-release in de wachtrij zetten."""
+
+        ok, error = self.queue.add_direct(
+            str(asset.get("url") or ""), str(asset.get("name") or ""), source="github"
+        )
+        if not ok:
+            self.log.write(f"Releasebestand overgeslagen: {error}")
+        elif self.settings.auto_start:
+            self.queue.start()
+
+    def _direct_session(self) -> Any:
+        """Sessie voor rechtstreekse bestanden, met de GitHub-sleutel als die er is."""
+
+        import requests  # noqa: PLC0415 - alleen nodig als er echt gedownload wordt
+
+        session = requests.Session()
+        token = (self.settings.github_token or "").strip()
+        if token:
+            session.headers.update(
+                {"Authorization": f"Bearer {token}", "User-Agent": "WeTransfer-Ophalen"}
+            )
+        return session
+
+    def _mailbox_config(self) -> MailboxConfig:
+        return MailboxConfig(
+            host=self.settings.mailbox_host,
+            port=self.settings.mailbox_port,
+            user=self.settings.mailbox_user,
+            password=self.settings.mailbox_password,
+            folder=self.settings.mailbox_folder,
+            sender=self.settings.mailbox_sender,
+            days=self.settings.mailbox_days,
+            use_ssl=True,
+        )
+
+    def _build_github(self) -> Optional[GithubWatcher]:
+        repos = parse_repos(self.settings.github_repos)
+        if not repos:
+            return None
+        return GithubWatcher(
+            repos,
+            self.config_dir / "github.json",
+            log=self.log.write,
+            on_links=self._links_from_source,
+            on_asset=self._asset_from_github,
+            client=self.github_client_factory()
+            if self.github_client_factory
+            else GithubClient(self.settings.github_token),
+            watch_releases=self.settings.github_watch_releases,
+            watch_links=self.settings.github_watch_links,
+            download_releases=self.settings.github_download_releases,
+            allow_hosts=self.allow_hosts,
+        )
+
+    def _start_sources(self) -> None:
+        """Zet de bronnen op die in de instellingen aanstaan."""
+
+        self._stop_sources()
+        self.sources = SourceRunner(log=self.log.write)
+        if self.settings.github_enabled:
+            watcher = self._build_github()
+            if watcher is None:
+                self.log.write("GitHub staat aan, maar er is geen repo ingevuld.")
+            else:
+                self.github = watcher
+                self.sources.register(
+                    "github", watcher.check_once, self.settings.github_interval, "GitHub"
+                )
+        if self.settings.mailbox_enabled:
+            config = self._mailbox_config()
+            problem = config.problem()
+            if problem:
+                self.log.write(f"Mailbox staat aan maar is nog niet compleet: {problem}")
+            else:
+                self.mailbox = MailboxWatcher(
+                    config,
+                    self.config_dir / "mailbox.json",
+                    log=self.log.write,
+                    on_links=self._links_from_source,
+                    client_factory=self.mailbox_client_factory,
+                    allow_hosts=self.allow_hosts,
+                )
+                self.sources.register(
+                    "mailbox", self.mailbox.check_once, self.settings.mailbox_interval, "Mailbox"
+                )
+        if self.sources.sources:
+            self.sources.start()
+            labels = ", ".join(source.label for source in self.sources.sources.values())
+            self.log.write(f"Bronnen actief: {labels}")
+
+    def _stop_sources(self) -> None:
+        self.sources.stop()
+
+    def _start_server(self) -> None:
+        """Zet de webversie aan (dezelfde pagina op een IP-adres in het netwerk)."""
+
+        self._stop_server()
+        if not self.settings.web_enabled:
+            return
+        if not (self.settings.web_code or "").strip():
+            self.settings.web_code = new_code()
+            self.settings_store.save(self.settings)
+        self.server = WebServer(
+            self,
+            ui_path().parent,
+            host=self.settings.web_host,
+            port=self.settings.web_port,
+            code=self.settings.web_code,
+            log=self.log.write,
+        )
+        ok, error = self.server.start()
+        if not ok:
+            self.server = None
+            self.log.write(error)
+
+    def _stop_server(self) -> None:
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
+
+    def start_background(self) -> None:
+        """Alles wat op de achtergrond hoort te lopen: wachtmap, bronnen, webversie."""
+
+        self._start_watcher()
+        self._start_sources()
+        self._start_server()
+        if self.settings.auto_start and self.queue.pending_count():
+            self.queue.start()
 
     # -- wat de pagina aanroept -------------------------------------------
     def get_state(self) -> dict[str, Any]:
         state = self.queue.state()
+        mailbox = self._mailbox_config()
         return {
             "version": __version__,
             "app_name": APP_NAME,
@@ -211,6 +381,27 @@ class DesktopApi:
             "settings": self.settings.as_dict(),
             "watch_dir_effective": self.settings.effective_watch_dir(),
             "autostart_registered": windows_autostart_enabled(),
+            "web": self.web_info(),
+            "sources": self.sources.status(),
+            "github": self.github.status()
+            if self.github
+            else {
+                "repos": parse_repos(self.settings.github_repos),
+                "states": {},
+                "last_result": {},
+                "default_repo": DEFAULT_GITHUB_REPO,
+            },
+            "mailbox": self.mailbox.status()
+            if self.mailbox
+            else {
+                "configured": mailbox.ready,
+                "problem": mailbox.problem(),
+                "host": mailbox.host,
+                "user": mailbox.user,
+                "folder": mailbox.folder,
+                "seen": 0,
+                "last_result": {},
+            },
             "log": self.log.tail(150),
             "platform": os.name,
             **state,
@@ -318,6 +509,30 @@ class DesktopApi:
             or before.get("watch_interval") != self.settings.watch_interval
         ):
             self._start_watcher()
+        nu = self.settings.as_dict()
+        bron_sleutels = (
+            "github_enabled",
+            "github_repos",
+            "github_interval",
+            "github_watch_releases",
+            "github_watch_links",
+            "github_download_releases",
+            "github_token",
+            "mailbox_enabled",
+            "mailbox_host",
+            "mailbox_port",
+            "mailbox_user",
+            "mailbox_password",
+            "mailbox_folder",
+            "mailbox_sender",
+            "mailbox_days",
+            "mailbox_interval",
+        )
+        if any(before.get(sleutel) != nu.get(sleutel) for sleutel in bron_sleutels):
+            self._start_sources()
+        web_sleutels = ("web_enabled", "web_host", "web_port", "web_code")
+        if any(before.get(sleutel) != nu.get(sleutel) for sleutel in web_sleutels):
+            self._start_server()
         self.log.write("Instellingen opgeslagen.")
         return {"ok": True, "settings": self.settings.as_dict()}
 
@@ -358,8 +573,124 @@ class DesktopApi:
         result = self.watcher.scan_once()
         return {"ok": True, "links": result.links, "files": result.files, "errors": result.errors}
 
+    # -- bronnen -----------------------------------------------------------
+    def web_info(self) -> dict[str, Any]:
+        """Waar de webversie te bereiken is (ook als hij uit staat)."""
+
+        if self.server is not None and self.server.running:
+            info = self.server.info()
+        else:
+            info = {
+                "enabled": False,
+                "address": "",
+                "host": self.settings.web_host,
+                "port": self.settings.web_port,
+                "code": self.settings.web_code,
+                "needs_code": bool(self.settings.web_code),
+                "started_at": 0.0,
+            }
+        if not info.get("address"):
+            host = local_ip() if self.settings.web_host in ("0.0.0.0", "", "::") else self.settings.web_host
+            info["address"] = f"http://{host}:{self.settings.web_port}"
+        info["local_ip"] = local_ip()
+        info["enabled"] = bool(self.server is not None and self.server.running)
+        return info
+
+    def check_github(self) -> dict[str, Any]:
+        """Nu meteen naar de GitHub-repo('s) kijken."""
+
+        watcher = self.github or self._build_github()
+        if watcher is None:
+            return {"ok": False, "error": "Vul eerst een GitHub-repo in (eigenaar/naam)."}
+        self.github = watcher
+        try:
+            result = watcher.check_once()
+        except Exception as exc:  # noqa: BLE001 - netjes teruggeven aan de pagina
+            self.log.write(f"GitHub controleren mislukte: {exc!r}")
+            return {"ok": False, "error": f"GitHub controleren mislukte: {exc}"}
+        summary = self._github_summary(result)
+        return {"ok": not result.get("errors"), "message": summary, "errors": result.get("errors") or []}
+
+    def _github_summary(self, result: dict[str, Any]) -> str:
+        repos = result.get("repos") or []
+        links = len(result.get("links") or [])
+        assets = len(result.get("assets") or [])
+        releases = sum(len(entry.get("new_releases") or []) for entry in repos)
+        pieces: list[str] = []
+        if releases:
+            pieces.append(f"{releases} nieuwe release(s)")
+        if assets:
+            pieces.append(f"{assets} releasebestand(en) in de wachtrij")
+        if links:
+            pieces.append(f"{links} WeTransfer-link(s) gevonden")
+        if not pieces:
+            pieces.append("niets nieuws")
+        errors = result.get("errors") or []
+        text = ", ".join(pieces) + "."
+        if errors:
+            text += " " + " ".join(str(entry) for entry in errors)
+        return text
+
+    def check_mailbox(self) -> dict[str, Any]:
+        """Nu meteen de mailbox lezen op WeTransfer-mails."""
+
+        config = self._mailbox_config()
+        problem = config.problem()
+        if problem:
+            return {"ok": False, "error": problem}
+        watcher = MailboxWatcher(
+            config,
+            self.config_dir / "mailbox.json",
+            log=self.log.write,
+            on_links=self._links_from_source,
+            client_factory=self.mailbox_client_factory,
+            allow_hosts=self.allow_hosts,
+        )
+        if self.mailbox is not None:
+            # Al bekeken berichten niet nog een keer opnieuw ophalen.
+            watcher.seen = list(self.mailbox.seen)
+        try:
+            result = watcher.check_once()
+        except Exception as exc:  # noqa: BLE001 - netjes teruggeven aan de pagina
+            self.log.write(f"Mailbox lezen mislukte: {exc!r}")
+            return {"ok": False, "error": f"Mailbox lezen mislukte: {exc}"}
+        self.mailbox = watcher
+        errors = result.get("errors") or []
+        message = (
+            f"{result.get('messages', 0)} bericht(en) gelezen, {len(result.get('links') or [])} link(s) gevonden."
+        )
+        if errors:
+            message += " " + " ".join(str(entry) for entry in errors)
+        return {
+            "ok": not errors,
+            "message": message,
+            "errors": errors,
+            "messages": result.get("messages", 0),
+            "links": len(result.get("links") or []),
+        }
+
+    def check_all_sources(self) -> dict[str, Any]:
+        """Alles in één keer controleren: GitHub, mailbox en de wachtmap."""
+
+        results: dict[str, Any] = {}
+        if parse_repos(self.settings.github_repos):
+            results["github"] = self.check_github()
+        else:
+            results["github"] = {"ok": False, "error": "Geen GitHub-repo ingevuld."}
+        results["mailbox"] = self.check_mailbox()
+        if self.watcher is not None:
+            results["wachtmap"] = self.scan_watch_folder()
+        return {"ok": True, "results": results}
+
+    def clear_log(self) -> dict[str, Any]:
+        self.log.lines.clear()
+        self.log.write("Logboek leeggemaakt.")
+        return {"ok": True}
+
     def shutdown(self) -> dict[str, Any]:
         self._stop_watcher()
+        self._stop_sources()
+        self._stop_server()
         self.queue.save()
         self.log.write("App afgesloten.")
         return {"ok": True}
@@ -381,13 +712,39 @@ def run_gui(api: DesktopApi, debug: bool = False) -> int:
 
     def on_loaded() -> None:
         api.log.write(f"Versie {__version__} gestart. Instellingen in {api.config_dir}")
-        api._start_watcher()
-        if api.settings.auto_start and api.queue.pending_count():
-            api.queue.start()
+        api.start_background()
 
     window.events.loaded += on_loaded
     try:
         webview.start(debug=debug)
+    finally:
+        api.shutdown()
+    return 0
+
+
+def run_headless(api: DesktopApi) -> int:
+    """Alleen de webversie: geen venster, wel de pagina op een IP-adres.
+
+    Handig op een pc of server zonder scherm: de app draait door en je gebruikt
+    hem vanaf je telefoon of een andere computer in het netwerk.
+    """
+
+    api.log.write(f"Versie {__version__} gestart zonder venster (alleen webversie).")
+    api.start_background()
+    if api.server is None:
+        print("De webversie staat uit. Zet 'web_enabled' aan in de instellingen of start met --serve --web.")
+        api.shutdown()
+        return 1
+    info = api.web_info()
+    print(f"Webversie actief op {info['address']}")
+    if info.get("needs_code"):
+        print(f"Toegangscode: {info['code']}")
+    print("Stoppen met Ctrl+C.")
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nStoppen.")
     finally:
         api.shutdown()
     return 0
@@ -404,6 +761,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     debug = "--debug" in argv
     api = DesktopApi()
+    if "--serve" in argv:
+        # Zonder venster, alleen de webversie. --web forceert hem aan.
+        if "--web" in argv or "--port" in argv or "--host" in argv:
+            api.settings.web_enabled = True
+        if "--host" in argv:
+            api.settings.web_host = argv[argv.index("--host") + 1]
+        if "--port" in argv:
+            try:
+                api.settings.web_port = int(argv[argv.index("--port") + 1])
+            except (IndexError, ValueError):
+                print("Gebruik --port <nummer>, bijvoorbeeld --port 8756.")
+                return 2
+        api.settings_store.save(api.settings)
+        return run_headless(api)
     return run_gui(api, debug=debug)
 
 

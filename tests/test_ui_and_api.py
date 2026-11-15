@@ -8,6 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
+
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -191,6 +194,215 @@ class DialoogTest(unittest.TestCase):
 class InstellingenTest(unittest.TestCase):
     def test_standaardmap_heet_wetransfer(self) -> None:
         self.assertTrue(str(Settings().download_dir).endswith("WeTransfer"))
+
+
+class FakeGithub:
+    """Een GitHub die precies teruggeeft wat de test wil."""
+    def __init__(self) -> None:
+        self.release_list: list[dict[str, Any]] = []
+        self.issue_list: list[dict[str, Any]] = []
+
+    def releases(self, repo: str) -> list[dict[str, Any]]:
+        return self.release_list
+
+    def issues(self, repo: str) -> list[dict[str, Any]]:
+        return self.issue_list
+
+    def comments(self, repo: str) -> list[dict[str, Any]]:
+        return []
+
+
+class FakeImap:
+    """Een mailbox met één bericht erin."""
+    def __init__(self, raw: bytes) -> None:
+        self.raw = raw
+
+    def login(self, user: str, password: str) -> tuple[str, list[bytes]]:
+        return "OK", [b""]
+
+    def select(self, folder: str, readonly: bool = False) -> tuple[str, list[bytes]]:
+        return "OK", [b""]
+
+    def uid(self, commando: str, *args: Any) -> tuple[str, list[Any]]:
+        if commando == "search":
+            return "OK", [b"7"]
+        return "OK", [(b"7 (RFC822 {1}", self.raw), b")"]
+
+    def logout(self) -> tuple[str, list[bytes]]:
+        return "BYE", [b""]
+
+
+class BronnenTest(unittest.TestCase):
+    """De webversie, de GitHub-bron en de mailbox vanaf het niveau van de app."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.api = main.DesktopApi(config_dir=Path(self.tmp.name))
+
+    def tearDown(self) -> None:
+        self.api.shutdown()
+        self.tmp.cleanup()
+
+    # -- webversie ---------------------------------------------------------
+    def test_web_info_geeft_een_adres_ook_als_hij_uit_staat(self) -> None:
+        info = self.api.web_info()
+        self.assertFalse(info["enabled"])
+        self.assertTrue(info["address"].startswith("http://"))
+        self.assertIn(str(self.api.settings.web_port), info["address"])
+
+    def test_webversie_aanzetten_start_een_echte_server(self) -> None:
+        result = self.api.save_settings(
+            {"web_enabled": True, "web_host": "127.0.0.1", "web_port": 0, "web_code": "abc123"}
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertIsNotNone(self.api.server)
+        server = self.api.server
+        assert server is not None
+        basis = f"http://127.0.0.1:{server.port}"
+
+        # Zonder code geen toegang.
+        self.assertEqual(requests.get(f"{basis}/api/state", timeout=5).status_code, 401)
+
+        sessie = requests.Session()
+        self.assertEqual(
+            sessie.post(f"{basis}/api/login", json={"code": "abc123"}, timeout=5).status_code, 200
+        )
+        toestand = sessie.get(f"{basis}/api/state", timeout=5).json()
+        self.assertEqual(toestand["version"], main.__version__)
+        self.assertIn("settings", toestand)
+        self.assertIn("web", toestand)
+
+        # Vanaf de telefoon een link toevoegen komt echt in de wachtrij.
+        antwoord = sessie.post(
+            f"{basis}/api/call",
+            json={"method": "add_links", "arguments": {"text": "https://we.tl/t-vanaftelefoon", "password": ""}},
+            timeout=5,
+        )
+        self.assertTrue(antwoord.json()["ok"])
+        self.assertEqual(len(self.api.get_state()["items"]), 1)
+        self.assertEqual(self.api.get_state()["items"][0]["source"], "handmatig")
+
+    def test_webversie_uitzetten_stopt_de_server(self) -> None:
+        self.api.save_settings({"web_enabled": True, "web_host": "127.0.0.1", "web_port": 0})
+        self.assertIsNotNone(self.api.server)
+        server = self.api.server
+        assert server is not None
+        poort = server.port
+        self.api.save_settings({"web_enabled": False})
+        self.assertIsNone(self.api.server)
+        with self.assertRaises(requests.RequestException):
+            requests.get(f"http://127.0.0.1:{poort}/api/state", timeout=2)
+
+    def test_toegangscode_wordt_automatisch_gemaakt(self) -> None:
+        self.api.save_settings({"web_enabled": True, "web_host": "127.0.0.1", "web_port": 0})
+        self.assertTrue(self.api.settings.web_code)
+        self.assertEqual(self.api.web_info()["code"], self.api.settings.web_code)
+
+    # -- GitHub ------------------------------------------------------------
+    def test_github_controleren_zonder_repo(self) -> None:
+        self.api.save_settings({"github_repos": ""})
+        result = self.api.check_github()
+        self.assertFalse(result["ok"])
+        self.assertIn("repo", result["error"].lower())
+
+    def test_nieuwe_release_van_github_komt_in_de_wachtrij(self) -> None:
+        fake = FakeGithub()
+        self.api.github_client_factory = lambda: fake
+        self.api.save_settings({"github_repos": "Theberas04/wetransfer-ophalen"})
+
+        fake.release_list = [{"tag_name": "v1.0.0", "assets": []}]
+        eerste = self.api.check_github()
+        self.assertTrue(eerste["ok"], eerste)
+        self.assertIn("ijkpunt", " ".join(self.api.log.tail(20)))
+        self.assertEqual(self.api.get_state()["items"], [])
+
+        fake.release_list = [
+            {
+                "tag_name": "v1.1.0",
+                "assets": [
+                    {
+                        "id": 42,
+                        "name": "WeTransferOphalen-Windows.zip",
+                        "size": 1234,
+                        "browser_download_url": "https://github.com/Theberas04/wetransfer-ophalen/releases/download/v1.1.0/x.zip",
+                    }
+                ],
+            },
+            {"tag_name": "v1.0.0", "assets": []},
+        ]
+        tweede = self.api.check_github()
+        self.assertTrue(tweede["ok"], tweede)
+        self.assertIn("nieuwe release", tweede["message"])
+        items = self.api.get_state()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source"], "github")
+        self.assertTrue(items[0]["direct"])
+        self.assertEqual(items[0]["name"], "WeTransferOphalen-Windows.zip")
+
+    def test_link_in_een_issue_komt_in_de_wachtrij(self) -> None:
+        fake = FakeGithub()
+        self.api.github_client_factory = lambda: fake
+        self.api.save_settings({"github_repos": "Theberas04/wetransfer-ophalen"})
+        fake.issue_list = [
+            {
+                "title": "Opnames",
+                "body": "Hier de opnames: https://we.tl/t-Zaj2e92uBwQWkVBN",
+                "html_url": "https://github.com/Theberas04/wetransfer-ophalen/issues/1",
+            }
+        ]
+        result = self.api.check_github()
+        self.assertTrue(result["ok"], result)
+        items = self.api.get_state()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source"], "github")
+        self.assertIn("we.tl", items[0]["url"])
+
+    # -- mailbox -----------------------------------------------------------
+    def test_mailbox_zonder_gegevens(self) -> None:
+        result = self.api.check_mailbox()
+        self.assertFalse(result["ok"])
+        self.assertIn("mailserver", result["error"])
+
+    def test_gevonden_mail_link_komt_in_de_wachtrij(self) -> None:
+        from email.message import EmailMessage  # noqa: PLC0415
+
+        bericht = EmailMessage()
+        bericht["From"] = "WeTransfer <noreply@wetransfer.com>"
+        bericht["Subject"] = "Je aangevraagde opnames staan klaar"
+        bericht.set_content("Download hier: https://we.tl/t-opnames12345")
+
+        self.api.mailbox_client_factory = lambda config: FakeImap(bericht.as_bytes())
+        self.api.save_settings(
+            {
+                "mailbox_host": "imap.example.com",
+                "mailbox_user": "tom@example.com",
+                "mailbox_password": "geheim",
+            }
+        )
+        result = self.api.check_mailbox()
+        self.assertTrue(result["ok"], result)
+        self.assertIn("1 link", result["message"])
+        items = self.api.get_state()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source"], "mailbox")
+
+        # Een tweede keer lezen levert niets nieuws op.
+        opnieuw = self.api.check_mailbox()
+        self.assertTrue(opnieuw["ok"])
+        self.assertEqual(len(self.api.get_state()["items"]), 1)
+
+    def test_alles_controleren_meldt_elke_bron(self) -> None:
+        result = self.api.check_all_sources()
+        self.assertTrue(result["ok"])
+        self.assertIn("github", result["results"])
+        self.assertIn("mailbox", result["results"])
+
+    def test_bronstatus_staat_in_de_toestand(self) -> None:
+        state = self.api.get_state()
+        self.assertIn("sources", state)
+        self.assertIn("github", state)
+        self.assertIn("mailbox", state)
+        self.assertIn("web", state)
 
 
 if __name__ == "__main__":

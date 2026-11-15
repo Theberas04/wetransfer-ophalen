@@ -30,10 +30,85 @@
         <div class="row"><input id="password" type="password" placeholder="Wachtwoord (indien beveiligd)"></div>
         <div class="row">
           <button id="btn-add" class="btn primary">Toevoegen</button>
-          <button id="btn-import" class="btn">Bestand met links kiezen…</button>
+          <button id="btn-import" class="btn needs-window">Bestand met links kiezen…</button>
           <button id="btn-scan" class="btn">Wachtmap nu scannen</button>
         </div>
         <p id="add-feedback" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>GitHub-bron</h2>
+        <p class="muted small">De app kijkt in deze repo's naar <b>nieuwe releases</b> (die bestanden haalt hij op) en naar <b>WeTransfer-links in issues en opmerkingen</b> (die gaan de wachtrij in).</p>
+        <label class="switch">
+          <input type="checkbox" id="github_enabled">
+          <span>GitHub in de gaten houden</span>
+        </label>
+        <div class="row">
+          <input id="github_repos" type="text" placeholder="eigenaar/repo, bijvoorbeeld Theberas04/wetransfer-ophalen">
+        </div>
+        <div class="row">
+          <label class="field"><span>Controleren elke</span><input id="github_interval" type="number" min="5" max="1440" step="5"> <span class="muted">minuten</span></label>
+        </div>
+        <div class="row">
+          <label class="switch"><input type="checkbox" id="github_watch_releases"><span>Releases</span></label>
+          <label class="switch"><input type="checkbox" id="github_watch_links"><span>Links in issues</span></label>
+          <label class="switch"><input type="checkbox" id="github_download_releases"><span>Releasebestanden ophalen</span></label>
+        </div>
+        <div class="row">
+          <input id="github_token" type="password" placeholder="Toegangssleutel (alleen nodig voor privé-repo's)">
+        </div>
+        <div class="row">
+          <button id="btn-check-github" class="btn">Nu controleren</button>
+          <span id="github-state" class="muted small"></span>
+        </div>
+        <p id="github-feedback" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>Aangevraagde opnames (mailbox)</h2>
+        <p class="muted small">WeTransfer mailt je zodra er iets binnenkomt bij een aangevraagde overdracht. De app leest alleen die mails — er wordt niets verwijderd, doorgestuurd of als gelezen gemarkeerd — en haalt de link eruit.</p>
+        <label class="switch">
+          <input type="checkbox" id="mailbox_enabled">
+          <span>Mailbox lezen</span>
+        </label>
+        <div class="row">
+          <input id="mailbox_host" type="text" placeholder="Mailserver, bijvoorbeeld imap.gmail.com">
+          <input id="mailbox_port" type="number" min="1" max="65535" placeholder="993">
+        </div>
+        <div class="row">
+          <input id="mailbox_user" type="text" placeholder="E-mailadres">
+          <input id="mailbox_password" type="password" placeholder="App-wachtwoord">
+        </div>
+        <div class="row">
+          <input id="mailbox_folder" type="text" placeholder="INBOX">
+          <input id="mailbox_sender" type="text" placeholder="wetransfer">
+        </div>
+        <div class="row">
+          <label class="field"><span>Laatste</span><input id="mailbox_days" type="number" min="1" max="365"> <span class="muted">dagen</span></label>
+          <label class="field"><span>Lezen elke</span><input id="mailbox_interval" type="number" min="5" max="1440" step="5"> <span class="muted">minuten</span></label>
+        </div>
+        <div class="row">
+          <button id="btn-check-mailbox" class="btn">Nu mailbox lezen</button>
+          <button id="btn-check-all" class="btn">Alles controleren</button>
+        </div>
+        <p class="muted small">Let op: bij Microsoft 365 werkt een gewoon wachtwoord niet meer voor IMAP. Gebruik een adres waar app-wachtwoorden werken (Gmail, iCloud, je eigen mailserver).</p>
+        <span id="mailbox-state" class="muted small"></span>
+        <p id="mailbox-feedback" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>Webversie (via een IP-adres)</h2>
+        <p class="muted small">Zet dit aan en je gebruikt dezelfde pagina vanaf je telefoon of een andere computer in je netwerk: <b id="web-address">—</b> <span id="web-state" class="chip">uit</span></p>
+        <p class="muted small">Toegangscode: <b id="web-code">—</b> — die vul je één keer in op je telefoon. Laat het veld hieronder leeg voor een automatische code; zonder code staat de pagina open voor iedereen in je netwerk.</p>
+        <label class="switch">
+          <input type="checkbox" id="web_enabled">
+          <span>Webversie aan</span>
+        </label>
+        <div class="row">
+          <label class="field"><span>Poort</span><input id="web_port" type="number" min="1" max="65535"></label>
+          <label class="field"><span>Toegangscode</span><input id="web_code" type="text" placeholder="automatisch"></label>
+        </div>
+        <p id="web-hint" class="muted small" hidden>Je gebruikt nu de webversie in een browser. Mappen kies je in het venster op de pc.</p>
       </div>
 
       <div class="card">
@@ -47,8 +122,8 @@
           <code id="watch-path" class="path">…</code>
         </div>
         <div class="row">
-          <button id="btn-choose-watch" class="btn">Map kiezen…</button>
-          <button id="btn-open-watch" class="btn">Openen</button>
+          <button id="btn-choose-watch" class="btn needs-window">Map kiezen…</button>
+          <button id="btn-open-watch" class="btn needs-window">Openen</button>
         </div>
         <div class="row">
           <label class="field">
@@ -62,8 +137,8 @@
         <h2>Downloadmap</h2>
         <div class="path-row"><code id="download-path" class="path">…</code></div>
         <div class="row">
-          <button id="btn-choose-download" class="btn">Map kiezen…</button>
-          <button id="btn-open-download" class="btn">Openen</button>
+          <button id="btn-choose-download" class="btn needs-window">Map kiezen…</button>
+          <button id="btn-open-download" class="btn needs-window">Openen</button>
         </div>
       </div>
 
@@ -103,7 +178,7 @@
         <label class="switch"><input type="checkbox" id="open_folder_after"><span>Downloadmap openen als alles klaar is</span></label>
         <div class="row">
           <button id="btn-save" class="btn primary">Instellingen opslaan</button>
-          <button id="btn-open-log" class="btn">Logboekmap openen</button>
+          <button id="btn-open-log" class="btn needs-window">Logboekmap openen</button>
         </div>
         <p id="settings-feedback" class="hint"></p>
       </div>
@@ -121,6 +196,7 @@
         <div class="card-head">
           <h2>Logboek</h2>
           <span class="muted small" id="config-dir"></span>
+          <button id="btn-clear-log" class="btn small">Logboek wissen</button>
         </div>
         <pre id="log" class="log"></pre>
       </div>
