@@ -162,11 +162,14 @@ jobs:
           if (-not $ok.window.app_ready) { throw "The packaged app never loaded its own page (app.js did not run)." }
           if (-not $ok.download.sha256) { throw "The packaged app did not prove a real download." }
           if ($ok.download.resumed_from -le 0) { throw "The packaged app did not prove that it resumes an interrupted download." }
-          if ($ok.dialog.invoke_required) {
+          # Het vensterrapport zit onder window.dialog; een verkeerd pad laat deze
+          # controles stil slagen, dus eerst kijken of de proef echt gedraaid heeft.
+          if (-not $ok.window.dialog) { throw "The packaged app did not probe its folder dialog at all." }
+          if ($ok.window.dialog.invoke_required) {
             throw "The packaged app opens its folder dialog outside the GUI thread, which WinForms refuses: the button would do nothing."
           }
-          if ($ok.dialog.error) { throw "The packaged app could not open a folder dialog: $($ok.dialog.error)" }
-          Write-Host "The packaged folder dialog ran on thread '$($ok.dialog.thread)' (needs marshalling: $($ok.dialog.invoke_required))"
+          if ($ok.window.dialog.error) { throw "The packaged app could not open a folder dialog: $($ok.window.dialog.error)" }
+          Write-Host "The packaged folder dialog ran on thread '$($ok.window.dialog.thread)' (needs marshalling: $($ok.window.dialog.invoke_required))"
 
       - name: Package and verify distribution
         shell: pwsh
