@@ -1,0 +1,2 @@
+# Alleen nodig voor het maken van het app-pictogram (tools/brand_icon.py).
+Pillow>=10,<14

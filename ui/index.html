@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WeTransfer Ophalen</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="images/werdens-media-logo.png" alt="Werdens Media" class="logo">
+      <div class="brand-text">
+        <h1>WeTransfer Ophalen</h1>
+        <p class="muted">Haalt WeTransfer-links automatisch op en meldt het via Slack · versie <span id="version">…</span></p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="status-pill" class="pill">Bezig met laden…</span>
+      <button id="btn-start" class="btn primary">Start ophalen</button>
+      <button id="btn-stop" class="btn" title="De huidige download stopt; bij de volgende start gaat hij verder waar hij gebleven was.">Stop</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="column left">
+      <div class="card">
+        <h2>Links toevoegen</h2>
+        <textarea id="links" rows="4" placeholder="Plak hier een of meer WeTransfer-links, bijvoorbeeld https://we.tl/t-xxxx of https://wetransfer.com/downloads/…"></textarea>
+        <div class="row"><input id="password" type="password" placeholder="Wachtwoord (indien beveiligd)"></div>
+        <div class="row">
+          <button id="btn-add" class="btn primary">Toevoegen</button>
+          <button id="btn-import" class="btn">Bestand met links kiezen…</button>
+          <button id="btn-scan" class="btn">Wachtmap nu scannen</button>
+        </div>
+        <p id="add-feedback" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>Wachtmap</h2>
+        <p class="muted small">Zet een opgeslagen e-mail of tekstbestand met een WeTransfer-link in deze map; de app pakt hem automatisch op.</p>
+        <label class="switch">
+          <input type="checkbox" id="watch_enabled">
+          <span>Wachtmap in de gaten houden</span>
+        </label>
+        <div class="path-row">
+          <code id="watch-path" class="path">…</code>
+        </div>
+        <div class="row">
+          <button id="btn-choose-watch" class="btn">Map kiezen…</button>
+          <button id="btn-open-watch" class="btn">Openen</button>
+        </div>
+        <div class="row">
+          <label class="field">
+            <span>Controleren elke</span>
+            <input id="watch_interval" type="number" min="5" max="600" step="5"> <span class="muted">seconden</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Downloadmap</h2>
+        <div class="path-row"><code id="download-path" class="path">…</code></div>
+        <div class="row">
+          <button id="btn-choose-download" class="btn">Map kiezen…</button>
+          <button id="btn-open-download" class="btn">Openen</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Slack-melding</h2>
+        <p class="muted small">Plak hier een Incoming Webhook van jouw Slack-werkruimte. De app stuurt één bericht per opgehaalde transfer, plus een samenvatting.</p>
+        <input id="slack_webhook" type="text" placeholder="https://hooks.slack.com/services/…">
+        <div class="row">
+          <label class="field">
+            <span>Melden</span>
+            <select id="notify_mode">
+              <option value="altijd">Altijd (gelukt en mislukt)</option>
+              <option value="alleen_bij_fouten">Alleen bij fouten</option>
+              <option value="uit">Uit</option>
+            </select>
+          </label>
+          <button id="btn-test-slack" class="btn">Testbericht sturen</button>
+        </div>
+        <details>
+          <summary>Hoe kom ik aan een webhook?</summary>
+          <ol class="small muted">
+            <li>Ga naar <b>api.slack.com/apps</b> en kies <b>Create New App → From scratch</b>.</li>
+            <li>Kies je werkruimte en een naam, bijvoorbeeld <i>WeTransfer Ophalen</i>.</li>
+            <li>Klik links op <b>Incoming Webhooks</b> en zet de schakelaar aan.</li>
+            <li>Klik op <b>Add New Webhook to Workspace</b>, kies het kanaal (bijvoorbeeld een DM aan jezelf) en geef toestemming.</li>
+            <li>Kopieer de webhook-URL en plak hem hierboven.</li>
+          </ol>
+        </details>
+        <p id="slack-feedback" class="hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>Overig</h2>
+        <label class="switch"><input type="checkbox" id="auto_start"><span>Direct beginnen zodra er een link binnenkomt</span></label>
+        <label class="switch"><input type="checkbox" id="autostart_with_windows"><span>Automatisch starten met Windows</span></label>
+        <label class="switch"><input type="checkbox" id="sound_on_finish"><span>Geluid als een download klaar is</span></label>
+        <label class="switch"><input type="checkbox" id="open_folder_after"><span>Downloadmap openen als alles klaar is</span></label>
+        <div class="row">
+          <button id="btn-save" class="btn primary">Instellingen opslaan</button>
+          <button id="btn-open-log" class="btn">Logboekmap openen</button>
+        </div>
+        <p id="settings-feedback" class="hint"></p>
+      </div>
+    </section>
+
+    <section class="column right">
+      <div class="card grow">
+        <div class="card-head">
+          <h2>Transfers <span id="counts" class="muted small"></span></h2>
+          <button id="btn-clear" class="btn small">Voltooide wissen</button>
+        </div>
+        <div id="queue" class="queue"></div>
+      </div>
+      <div class="card log-card">
+        <div class="card-head">
+          <h2>Logboek</h2>
+          <span class="muted small" id="config-dir"></span>
+        </div>
+        <pre id="log" class="log"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

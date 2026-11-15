@@ -1,0 +1,10 @@
+.venv/
+build/
+dist/
+deliverables/
+__pycache__/
+*.pyc
+selftest-report.json
+motw-probe/
+*.wetransfer.part
+.DS_Store

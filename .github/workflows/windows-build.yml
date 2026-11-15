@@ -1,0 +1,238 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Check that everything compiles
+        run: python -m compileall -q main.py wtdl tools tests
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: x64
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          cmd /c build_windows.bat
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed with exit code $LASTEXITCODE" }
+
+      # Een gebruiker die de gedownloade ZIP uitpakt, krijgt DLL's met het Mark of the
+      # Web; de .NET-runtime weigert die dan te laden. Deze stap bootst dat na: de app
+      # hoort te falen zonder de .exe.config en te starten mét.
+      - name: Start the packaged app from a download-tagged folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $appName = "WeTransfer Ophalen"
+          $configName = "$appName.exe.config"
+          $app = Join-Path $env:GITHUB_WORKSPACE "dist\$appName"
+          if (!(Test-Path (Join-Path $app $configName))) {
+            throw "Build did not produce $configName next to the executable"
+          }
+
+          $probe = Join-Path $env:GITHUB_WORKSPACE "motw-probe"
+          if (Test-Path $probe) { Remove-Item $probe -Recurse -Force }
+          Copy-Item $app $probe -Recurse -Force
+          $exe = Join-Path $probe "$appName.exe"
+          $config = Join-Path $probe $configName
+          $report = Join-Path $env:GITHUB_WORKSPACE "selftest-report.json"
+
+          $zone = "[ZoneTransfer]`nZoneId=3`nReferrerUrl=https://example.invalid`nHostUrl=https://example.invalid"
+          $tagged = 0
+          Get-ChildItem -Path $probe -Recurse -File -Include *.dll, *.exe | ForEach-Object {
+            Set-Content -Path $_.FullName -Stream Zone.Identifier -Value $zone
+            $tagged++
+          }
+          Write-Host "Tagged $tagged packaged binaries as downloaded from the internet."
+
+          function Invoke-SelfTest([string]$binary, [int]$timeoutSeconds) {
+            Remove-Item $report -ErrorAction SilentlyContinue
+            # Via ProcessStartInfo en niet via Start-Process: -PassThru komt bij dit
+            # vensterprogramma nooit terug en laat de hele build zonder uitvoer stilstaan.
+            $info = New-Object System.Diagnostics.ProcessStartInfo
+            $info.FileName = $binary
+            $info.Arguments = "--selftest `"$report`""
+            $info.WorkingDirectory = Split-Path $binary
+            $info.UseShellExecute = $false
+            $info.RedirectStandardOutput = $true
+            $info.RedirectStandardError = $true
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $info
+            [void]$proc.Start()
+            $stdout = $proc.StandardOutput.ReadToEndAsync()
+            $stderr = $proc.StandardError.ReadToEndAsync()
+            Write-Host "$(Get-Date -Format o) started $binary (pid $($proc.Id)), waiting up to ${timeoutSeconds}s"
+            $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+            while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 500
+            }
+            $timedOut = -not $proc.HasExited
+            if ($timedOut) {
+              taskkill /PID $proc.Id /T /F | Out-Null
+              Start-Sleep -Seconds 2
+            }
+            foreach ($text in @($stdout.Result, $stderr.Result)) {
+              if ($text) { Write-Host $text }
+            }
+            # Write-Host en geen kale Get-Content: die wordt deel van de retourwaarde
+            # van deze functie en dan verdwijnt het rapport uit het logboek.
+            $reportText = ""
+            if (Test-Path $report) {
+              $reportText = Get-Content $report -Raw
+              Write-Host $reportText
+            }
+            $exitCode = $null
+            if (-not $timedOut) { $exitCode = $proc.ExitCode }
+            return [pscustomobject]@{ ExitCode = $exitCode; TimedOut = $timedOut; Report = $reportText }
+          }
+
+          Rename-Item $config "$configName.disabled"
+          $withoutConfig = Invoke-SelfTest $exe 60
+          Write-Host "Without the app config: exit code $($withoutConfig.ExitCode), timed out $($withoutConfig.TimedOut)"
+          if ($withoutConfig.ExitCode -eq 0) {
+            Write-Host "::warning::De app startte ook zonder loadFromRemoteSources; deze controle bewijst nu niets."
+          } elseif (-not $withoutConfig.Report) {
+            Write-Host "::warning::De getagde build stopte voordat hij een rapport schreef."
+          } else {
+            $failedReport = $withoutConfig.Report | ConvertFrom-Json
+            Write-Host "Without the app config the app reported: steps $($failedReport.steps -join ' -> '), error $($failedReport.error)"
+            if ($failedReport.steps -notcontains "clr") {
+              Write-Host "::warning::De getagde build bereikte de CLR-stap niet, dus hij faalde om een andere reden."
+            }
+          }
+
+          Rename-Item (Join-Path $probe "$configName.disabled") $config
+          $withConfig = Invoke-SelfTest $exe 240
+          Write-Host "With the app config: exit code $($withConfig.ExitCode), timed out $($withConfig.TimedOut)"
+          if ($withConfig.TimedOut) {
+            throw "The packaged app did not finish its selftest from a download-tagged folder."
+          }
+          if ($withConfig.ExitCode -ne 0) {
+            throw "The packaged app did not pass its selftest (exit code $($withConfig.ExitCode))."
+          }
+          if (-not $withConfig.Report) {
+            throw "The packaged app did not write a selftest report."
+          }
+          $ok = $withConfig.Report | ConvertFrom-Json
+          Write-Host "Steps: $($ok.steps -join ' -> ')"
+          Write-Host "Download: $($ok.download | ConvertTo-Json -Compress)"
+          Write-Host "Queue: $($ok.queue | ConvertTo-Json -Compress)"
+          if (-not $ok.ok) { throw "The packaged app reported a failed selftest: $($ok.error)" }
+          if ($ok.steps -notcontains "window") { throw "The packaged app never opened its window: $($ok.steps -join ' -> ')" }
+          if (-not $ok.window.app_ready) { throw "The packaged app never loaded its own page (app.js did not run)." }
+          if (-not $ok.download.sha256) { throw "The packaged app did not prove a real download." }
+          if ($ok.download.resumed_from -le 0) { throw "The packaged app did not prove that it resumes an interrupted download." }
+          if ($ok.dialog.invoke_required) {
+            throw "The packaged app opens its folder dialog outside the GUI thread, which WinForms refuses: the button would do nothing."
+          }
+          if ($ok.dialog.error) { throw "The packaged app could not open a folder dialog: $($ok.dialog.error)" }
+          Write-Host "The packaged folder dialog ran on thread '$($ok.dialog.thread)' (needs marshalling: $($ok.dialog.invoke_required))"
+
+      - name: Package and verify distribution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $app = Join-Path $env:GITHUB_WORKSPACE "dist\WeTransfer Ophalen"
+          $exe = Join-Path $app "WeTransfer Ophalen.exe"
+          if (!(Test-Path $exe)) { throw "Build did not produce WeTransfer Ophalen.exe" }
+          $package = Join-Path $env:GITHUB_WORKSPACE "WeTransferOphalen-Windows.zip"
+          Compress-Archive -Path (Join-Path $app "*") -DestinationPath $package -CompressionLevel Optimal -Force
+          python -c "import sys,zipfile; p=sys.argv[1]; z=zipfile.ZipFile(p); assert z.testzip() is None; names=z.namelist(); assert any(n.split('/')[-1]=='WeTransfer Ophalen.exe' for n in names), 'ZIP mist de app'; assert any(n.split('/')[-1]=='WeTransfer Ophalen.exe.config' for n in names), 'ZIP mist de app-config'; assert any(n.endswith('ui/index.html') for n in names), 'ZIP mist de gebruikersinterface'; print('Package verified:', p, 'entries:', len(names))" $package
+          $size = (Get-Item $package).Length / 1MB
+          Write-Host ("Package size: {0:N1} MB" -f $size)
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeTransferOphalen-Windows
+          path: WeTransferOphalen-Windows.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload selftest report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selftest-report
+          path: selftest-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # De ZIP als losse download aanbieden, zodat de app zonder GitHub-account te
+  # downloaden is: /releases/latest/download/<bestandsnaam>.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download the built package
+        uses: actions/download-artifact@v4
+        with:
+          name: WeTransferOphalen-Windows
+          path: pakket
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="$(cat version.txt)"
+          TAG="v$VERSION"
+          FILE="WeTransfer Ophalen $VERSION (Windows).zip"
+          cp "pakket/WeTransferOphalen-Windows.zip" "$FILE"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$FILE" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$FILE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "WeTransfer Ophalen $VERSION" \
+              --latest \
+              --notes "Windows-versie van WeTransfer Ophalen $VERSION.
+
+          Pak de ZIP uit en start \`WeTransfer Ophalen.exe\`. Laat het bestand \`WeTransfer Ophalen.exe.config\` naast de .exe staan, anders weigert Windows de app te starten (Mark of the Web)."
+          fi
