@@ -112,10 +112,33 @@ class BerichtTest(unittest.TestCase):
     def test_duidelijk_gemaakte_configuratie(self) -> None:
         config = MailboxConfig()
         self.assertFalse(config.ready)
-        self.assertIn("mailserver", config.problem())
+        self.assertIn("e-mailadres", config.problem())
         config = MailboxConfig(host="imap.example.com", user="tom@example.com", password="geheim")
         self.assertTrue(config.ready)
         self.assertEqual(config.problem(), "")
+
+    def test_gmail_adres_vult_de_mailserver_in(self) -> None:
+        config = MailboxConfig(user="tom@gmail.com", password="geheim")
+        self.assertEqual(config.effective_host(), "imap.gmail.com")
+        self.assertTrue(config.ready)
+        self.assertEqual(MailboxConfig(host="gmail", user="tom@gmail.com", password="x").effective_host(), "imap.gmail.com")
+        self.assertEqual(
+            MailboxConfig(host="imap.example.com", user="tom@example.com", password="x").effective_host(),
+            "imap.example.com",
+        )
+
+    def test_icloud_en_onbekende_providers(self) -> None:
+        self.assertEqual(
+            MailboxConfig(user="tom@icloud.com", password="x").effective_host(), "imap.mail.me.com"
+        )
+        onbekend = MailboxConfig(user="tom@mijnbedrijf.nl", password="x")
+        self.assertEqual(onbekend.effective_host(), "")
+        self.assertIn("mailserver", onbekend.problem())
+
+    def test_microsoft_365_krijgt_een_duidelijke_uitleg(self) -> None:
+        config = MailboxConfig(host="imap.gmail.com", user="tom@hotmail.com", password="x")
+        self.assertIn("Microsoft 365", config.problem())
+        self.assertFalse(config.ready)
 
 
 class WatcherTest(unittest.TestCase):
@@ -183,6 +206,32 @@ class WatcherTest(unittest.TestCase):
         self.assertIn("app-wachtwoord", result["errors"][0])
         self.assertEqual(self.links, [])
 
+    def test_app_wachtwoord_met_spaties_wordt_opnieuw_geprobeerd(self) -> None:
+        """Google toont een app-wachtwoord met spaties; die horen er niet bij."""
+
+        self.config = MailboxConfig(
+            host="imap.gmail.com",
+            user="tom@gmail.com",
+            password="abcd efgh ijkl mnop",
+        )
+        imap = FakeImap(self.config, uids=["1"], berichten={"1": bericht(f"Hier: {LINK}")})
+        origineel = imap.login
+
+        def login(user: str, password: str):  # noqa: ANN202
+            imap.calls.append(("login", user, password))
+            if password != "abcdefghijklmnop":
+                raise imaplib.IMAP4.error("LOGIN failed: Invalid credentials")
+            imap.ingelogd = True
+            return "OK", [b"LOGIN completed"]
+
+        imap.login = login  # type: ignore[method-assign]
+        watcher = self.maak(imap)
+        result = watcher.check_once()
+        self.assertEqual(result["links"], [LINK])
+        self.assertEqual([call[2] for call in imap.calls if call[0] == "login"][-1], "abcdefghijklmnop")
+        self.assertTrue(any("zonder spaties" in regel for regel in self.logs))
+        self.assertTrue(origineel)  # de originele login bestaat nog
+
     def test_zonder_gegevens_wordt_er_niets_geopend(self) -> None:
         gebruikt: list[str] = []
 
@@ -193,7 +242,7 @@ class WatcherTest(unittest.TestCase):
         watcher = MailboxWatcher(MailboxConfig(), self.dir / "mailbox.json", client_factory=factory)
         result = watcher.check_once()
         self.assertEqual(gebruikt, [])
-        self.assertIn("mailserver", result["errors"][0])
+        self.assertIn("e-mailadres", result["errors"][0])
 
     def test_status_toont_wat_er_ontbreekt(self) -> None:
         watcher = MailboxWatcher(MailboxConfig(host="imap.example.com"), self.dir / "mailbox.json")

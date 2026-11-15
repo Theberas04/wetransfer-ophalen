@@ -176,6 +176,7 @@ jobs:
             throw "The packaged app did not finish everything it found on GitHub: $($ok.github.items | ConvertTo-Json -Compress)"
           }
           if ($ok.mailbox.source -ne "mailbox") { throw "The packaged app did not pick up the link from the mailbox mail." }
+          if ($ok.mailbox.host -ne "imap.gmail.com") { throw "The packaged app did not resolve the Gmail mail server from the address: $($ok.mailbox.host)" }
           if (-not $ok.window.app_ready) { throw "The packaged app never loaded its own page (app.js did not run)." }
           if (-not $ok.download.sha256) { throw "The packaged app did not prove a real download." }
           if ($ok.download.resumed_from -le 0) { throw "The packaged app did not prove that it resumes an interrupted download." }

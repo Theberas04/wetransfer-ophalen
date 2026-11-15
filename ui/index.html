@@ -72,12 +72,12 @@
           <span>Mailbox lezen</span>
         </label>
         <div class="row">
-          <input id="mailbox_host" type="text" placeholder="Mailserver, bijvoorbeeld imap.gmail.com">
+          <input id="mailbox_host" type="text" placeholder="imap.gmail.com">
           <input id="mailbox_port" type="number" min="1" max="65535" placeholder="993">
         </div>
         <div class="row">
           <input id="mailbox_user" type="text" placeholder="E-mailadres">
-          <input id="mailbox_password" type="password" placeholder="App-wachtwoord">
+          <input id="mailbox_password" type="password" placeholder="App-wachtwoord (niet je gewone wachtwoord)">
         </div>
         <div class="row">
           <input id="mailbox_folder" type="text" placeholder="INBOX">
@@ -91,7 +91,17 @@
           <button id="btn-check-mailbox" class="btn">Nu mailbox lezen</button>
           <button id="btn-check-all" class="btn">Alles controleren</button>
         </div>
-        <p class="muted small">Let op: bij Microsoft 365 werkt een gewoon wachtwoord niet meer voor IMAP. Gebruik een adres waar app-wachtwoorden werken (Gmail, iCloud, je eigen mailserver).</p>
+        <details>
+          <summary>Gmail: hoe maak ik een app-wachtwoord?</summary>
+          <ol class="small muted">
+            <li>Zet <b>tweestapsverificatie</b> aan op je Google-account (verplicht voor app-wachtwoorden).</li>
+            <li>Ga naar <b>myaccount.google.com/apppasswords</b>.</li>
+            <li>Typ een naam, bijvoorbeeld <i>WeTransfer Ophalen</i>, en klik op <b>Maken</b>.</li>
+            <li>Kopieer het wachtwoord van 16 letters en plak het hierboven (spaties mogen blijven staan).</li>
+          </ol>
+          <p class="small muted">Je gewone Gmail-wachtwoord werkt hier niet. Mailserver <b>imap.gmail.com</b>, poort <b>993</b>, map <b>INBOX</b>.</p>
+        </details>
+        <p class="muted small">Let op: bij Microsoft 365 (Outlook, Hotmail, Live) werkt IMAP met een wachtwoord niet meer. Gebruik een Gmail- of iCloud-adres, of laat je WeTransfer-mails daarheen doorsturen.</p>
         <span id="mailbox-state" class="muted small"></span>
         <p id="mailbox-feedback" class="hint"></p>
       </div>

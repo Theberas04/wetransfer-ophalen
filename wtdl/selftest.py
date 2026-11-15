@@ -499,13 +499,17 @@ def _run(report: Report, ui_path: Optional[Path], core_only: bool = False) -> No
         mailbox_api.mailbox_client_factory = lambda config: mailbox_mock
         mailbox_api.save_settings(
             {
-                "mailbox_host": "imap.example.com",
-                "mailbox_user": "tom@example.com",
+                # Geen mailserver invullen: die hoort uit het Gmail-adres te komen.
+                "mailbox_host": "",
+                "mailbox_user": "tom@gmail.com",
                 "mailbox_password": "zelftest",
                 "mailbox_enabled": True,
                 "download_dir": str(tmp_path / "mailbox-downloads"),
                 "slack_webhook": f"{server.base_url}/slack",
             }
+        )
+        assert mailbox_api._mailbox_config().effective_host() == "imap.gmail.com", (
+            "de mailserver wordt niet uit het Gmail-adres gehaald"
         )
         mailbox_result = mailbox_api.check_mailbox()
         assert mailbox_result["ok"], f"mailbox lezen mislukte: {mailbox_result}"
@@ -521,6 +525,7 @@ def _run(report: Report, ui_path: Optional[Path], core_only: bool = False) -> No
                 "messages": mailbox_result.get("messages"),
                 "links": mailbox_result.get("links", 0),
                 "source": mailbox_items[0]["source"],
+                "host": mailbox_api._mailbox_config().effective_host(),
             },
         )
         mailbox_api.shutdown()

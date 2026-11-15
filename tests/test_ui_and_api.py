@@ -195,6 +195,13 @@ class InstellingenTest(unittest.TestCase):
     def test_standaardmap_heet_wetransfer(self) -> None:
         self.assertTrue(str(Settings().download_dir).endswith("WeTransfer"))
 
+    def test_standaard_mailserver_is_gmail(self) -> None:
+        settings = Settings()
+        self.assertEqual(settings.mailbox_host, "imap.gmail.com")
+        self.assertEqual(settings.mailbox_port, 993)
+        self.assertEqual(settings.mailbox_sender, "wetransfer")
+        self.assertEqual(settings.github_repos, "Theberas04/wetransfer-ophalen")
+
 
 class FakeGithub:
     """Een GitHub die precies teruggeeft wat de test wil."""
@@ -361,7 +368,7 @@ class BronnenTest(unittest.TestCase):
     def test_mailbox_zonder_gegevens(self) -> None:
         result = self.api.check_mailbox()
         self.assertFalse(result["ok"])
-        self.assertIn("mailserver", result["error"])
+        self.assertIn("e-mailadres", result["error"])
 
     def test_gevonden_mail_link_komt_in_de_wachtrij(self) -> None:
         from email.message import EmailMessage  # noqa: PLC0415

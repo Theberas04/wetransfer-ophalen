@@ -73,20 +73,27 @@ cannot be created") en gaat alleen over transfers die je zelf maakt en over boar
 API-sleutel levert je aangevraagde opnames dus niet op — de mail van WeTransfer is de route
 die wél werkt.
 
-Vul bij **Aangevraagde opnames (mailbox)** in:
+Vul bij **Aangevraagde opnames (mailbox)** je **e-mailadres** en een **app-wachtwoord** in.
+De mailserver wordt uit je adres gehaald (`@gmail.com` → `imap.gmail.com`, `@icloud.com` →
+`imap.mail.me.com`); je kunt hem ook zelf invullen. Poort 993, map `INBOX`, afzender-filter
+`wetransfer` (WeTransfer mailt vanaf `noreply@wetransfer.com`) en 30 dagen terug zijn de
+standaardwaarden.
 
-- **Mailserver**: bijvoorbeeld `imap.gmail.com`, `imap.mail.me.com` of de server van je provider.
-- **Poort**: 993 (met SSL).
-- **E-mailadres** en **app-wachtwoord**.
-- **Map** (standaard `INBOX`), **afzender-filter** (standaard `wetransfer`) en hoe ver terug
-  gekeken wordt (standaard 30 dagen).
+**Gmail in vier stappen:**
+
+1. Zet tweestapsverificatie aan op je Google-account (verplicht voor app-wachtwoorden).
+2. Ga naar <https://myaccount.google.com/apppasswords>.
+3. Typ een naam (bijvoorbeeld *WeTransfer Ophalen*) en klik op **Maken**.
+4. Kopieer het wachtwoord van 16 letters en plak het in de app bij **App-wachtwoord**.
+   De spaties die Google toont mogen blijven staan; de app probeert het automatisch ook
+   zonder spaties. Je gewone Gmail-wachtwoord werkt hier niet.
 
 De app zoekt in die map naar mail van WeTransfer, haalt de downloadlink eruit en zet hem in de
 wachtrij. Welke berichten al bekeken zijn staat in `%APPDATA%\WeTransfer Ophalen\mailbox.json`.
 
-Let op: **Microsoft 365 laat geen IMAP met een gewoon wachtwoord meer toe.** Gebruik een adres
-waar app-wachtwoorden werken (Gmail, iCloud, je eigen mailserver) of een provider die
-app-wachtwoorden ondersteunt.
+Let op: **Microsoft 365 laat geen IMAP met een gewoon wachtwoord meer toe.** Vul je een
+Outlook-, Hotmail- of Live-adres in, dan zegt de app dat meteen in plaats van te blijven
+proberen. Laat je WeTransfer-mails in dat geval doorsturen naar een Gmail- of iCloud-adres.
 
 ## Installeren
 

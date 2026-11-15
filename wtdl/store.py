@@ -60,7 +60,7 @@ class Settings:
     github_token: str = ""
     # Mailbox-bron: WeTransfer-mails (bijvoorbeeld van aangevraagde opnames) lezen.
     mailbox_enabled: bool = False
-    mailbox_host: str = ""
+    mailbox_host: str = "imap.gmail.com"
     mailbox_port: int = 993
     mailbox_user: str = ""
     mailbox_password: str = ""

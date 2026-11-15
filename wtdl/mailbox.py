@@ -28,6 +28,43 @@ from .wetransfer import extract_links
 MAX_IDS = 1000
 DEFAULT_SENDER = "wetransfer"
 DEFAULT_DAYS = 30
+# Mailservers van de bekende aanbieders, zodat een adres genoeg is.
+KNOWN_HOSTS = {
+    "gmail.com": "imap.gmail.com",
+    "googlemail.com": "imap.gmail.com",
+    "icloud.com": "imap.mail.me.com",
+    "me.com": "imap.mail.me.com",
+    "mac.com": "imap.mail.me.com",
+}
+SHORT_NAMES = {
+    "gmail": "imap.gmail.com",
+    "googlemail": "imap.gmail.com",
+    "icloud": "imap.mail.me.com",
+}
+# Bij deze aanbieders werkt IMAP met een wachtwoord of app-wachtwoord niet (meer).
+NO_PASSWORD_IMAP = (
+    "outlook.com",
+    "outlook.nl",
+    "hotmail.com",
+    "hotmail.nl",
+    "live.com",
+    "live.nl",
+    "msn.com",
+    "office365.com",
+)
+
+
+def normalize_host(host: str) -> str:
+    """Maak van 'gmail' of 'gmail.com' de echte mailserver."""
+
+    value = (host or "").strip().lower()
+    if not value:
+        return ""
+    if value in SHORT_NAMES:
+        return SHORT_NAMES[value]
+    if "." not in value:
+        return value
+    return value
 
 
 class MailboxError(Exception):
@@ -47,13 +84,28 @@ class MailboxConfig:
     days: int = DEFAULT_DAYS
     use_ssl: bool = True
 
+    def effective_host(self) -> str:
+        """De mailserver: wat is ingevuld, of die van de aanbieder van het adres."""
+
+        host = normalize_host(self.host)
+        if host:
+            return host
+        domain = (self.user or "").strip().lower().rsplit("@", 1)[-1]
+        return KNOWN_HOSTS.get(domain, "")
+
     def problem(self) -> str:
         """Geef terug wat er nog mist, of een lege tekst als alles ingevuld is."""
 
-        if not self.host.strip():
-            return "Er is nog geen mailserver ingevuld."
         if not self.user.strip():
             return "Er is nog geen e-mailadres ingevuld."
+        domain = self.user.strip().lower().rsplit("@", 1)[-1]
+        if domain in NO_PASSWORD_IMAP:
+            return (
+                "Bij Microsoft 365 (Outlook, Hotmail, Live) werkt IMAP met een wachtwoord niet meer. "
+                "Gebruik een Gmail- of iCloud-adres, of laat je WeTransfer-mails daarheen doorsturen."
+            )
+        if not self.effective_host():
+            return "Er is nog geen mailserver ingevuld."
         if not self.password:
             return "Er is nog geen wachtwoord (of app-wachtwoord) ingevuld."
         return ""
@@ -65,6 +117,7 @@ class MailboxConfig:
     def as_dict(self) -> dict[str, Any]:
         data = {
             "host": self.host,
+            "effective_host": self.effective_host(),
             "port": self.port,
             "user": self.user,
             "folder": self.folder,
@@ -215,9 +268,9 @@ class MailboxWatcher:
 
         client = None
         try:
-            client = self.client_factory(self.config)
-            client.login(self.config.user, self.config.password)
+            client = self._connect()
             client.select(self.config.folder, readonly=True)
+            self._write(f"Mailbox: verbonden met {self.config.effective_host()} ({self.config.folder}).")
             for uid in self._new_uids(client):
                 raw = self._fetch(client, uid)
                 if not raw:
@@ -261,6 +314,31 @@ class MailboxWatcher:
             self.on_links(result["links"], "mailbox")
         return result
 
+    def _connect(self) -> Any:
+        """Inloggen; probeer bij een app-wachtwoord met spaties ook de variant zonder.
+
+        Google toont een app-wachtwoord als vier groepjes van vier tekens. De spaties
+        horen niet bij het wachtwoord, maar als ze meegeplakt worden mislukt de login.
+        """
+
+        config = self.config
+        client = self.client_factory(config)
+        try:
+            client.login(config.user, config.password)
+            return client
+        except imaplib.IMAP4.error:
+            zonder_spaties = (config.password or "").replace(" ", "")
+            if not zonder_spaties or zonder_spaties == config.password:
+                raise
+            self._write("Mailbox: met spaties mislukte het inloggen; opnieuw zonder spaties.")
+            try:
+                client.logout()
+            except Exception:  # noqa: BLE001 - afsluiten mag niet klagen
+                pass
+            client = self.client_factory(config)
+            client.login(config.user, zonder_spaties)
+            return client
+
     def _new_uids(self, client: Any) -> list[str]:
         since = (date.today() - timedelta(days=max(1, int(self.config.days or DEFAULT_DAYS)))).strftime("%d-%b-%Y")
         criteria = f'(FROM "{self.config.sender}") SINCE {since}'
@@ -292,9 +370,10 @@ class MailboxWatcher:
 def default_client(config: MailboxConfig) -> Any:
     """Open een echte IMAP-verbinding."""
 
+    host = config.effective_host()
     if config.use_ssl:
-        return imaplib.IMAP4_SSL(config.host.strip(), int(config.port or 993))
-    return imaplib.IMAP4(config.host.strip(), int(config.port or 143))
+        return imaplib.IMAP4_SSL(host, int(config.port or 993))
+    return imaplib.IMAP4(host, int(config.port or 143))
 
 
 def _login_message(raw: str) -> str:
